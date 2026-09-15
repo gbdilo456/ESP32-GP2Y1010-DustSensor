@@ -19,32 +19,64 @@ const int ADC_MAX = 4095;         // Resolución máxima del ADC (12 bits)
 WebServer server(80);
 float dustDensity = 0.0;
 float voltage = 0.0;
+int rawADC = 0;
 unsigned long lastDisplayTime = 0;
+unsigned long lastDebugTime = 0;
 const unsigned long DISPLAY_INTERVAL = 10000; // Mostrar IP cada 10 segundos
+const unsigned long DEBUG_INTERVAL = 2000;    // Debug cada 2 segundos
 
 // ========== FUNCIÓN PARA LEER EL SENSOR ==========
 void readDustSensor() {
+  Serial.println("\n--- Iniciando lectura del sensor ---");
+  
   // Encender LED
   digitalWrite(LED_PIN, HIGH);
+  Serial.println("LED ENCENDIDO");
+  delay(10);
   
   // Esperar a que se estabilice
-  delayMicroseconds(WAIT_TIME * 1000);
+  delay(WAIT_TIME);
+  Serial.print("Esperado: ");
+  Serial.print(WAIT_TIME);
+  Serial.println(" ms");
   
   // Leer múltiples muestras y promediar
   long sumValue = 0;
   int numSamples = 100;
+  
+  Serial.print("Leyendo ");
+  Serial.print(numSamples);
+  Serial.println(" muestras del ADC...");
+  
   for (int i = 0; i < numSamples; i++) {
-    sumValue += analogRead(DUST_SENSOR_PIN);
-    delayMicroseconds(10);
+    int lectura = analogRead(DUST_SENSOR_PIN);
+    sumValue += lectura;
+    
+    // Mostrar cada 10 muestras
+    if (i % 10 == 0) {
+      Serial.print("Muestra ");
+      Serial.print(i);
+      Serial.print(": ");
+      Serial.println(lectura);
+    }
+    delay(1);
   }
   
-  int avgRaw = sumValue / numSamples;
+  rawADC = sumValue / numSamples;
+  
+  Serial.print("Valor ADC promedio: ");
+  Serial.println(rawADC);
   
   // Apagar LED
   digitalWrite(LED_PIN, LOW);
+  Serial.println("LED APAGADO");
   
   // Convertir lectura ADC a voltaje
-  voltage = (avgRaw / (float)ADC_MAX) * VOLTAGE_REF;
+  voltage = (rawADC / (float)ADC_MAX) * VOLTAGE_REF;
+  
+  Serial.print("Voltaje calculado: ");
+  Serial.print(voltage);
+  Serial.println(" V");
   
   // Convertir voltaje a densidad de polvo (µg/m³)
   // Fórmula del fabricante: densidad = (voltage - Vref) / 0.005
@@ -52,10 +84,20 @@ void readDustSensor() {
   float Vref = 0.8;
   dustDensity = (voltage - Vref) / 0.005;
   
+  Serial.print("Vref: ");
+  Serial.print(Vref);
+  Serial.println(" V");
+  Serial.print("Densidad de polvo: ");
+  Serial.print(dustDensity);
+  Serial.println(" µg/m³");
+  
   // Asegurar que no sea negativo
   if (dustDensity < 0) {
+    Serial.println("Valor negativo detectado, ajustando a 0");
     dustDensity = 0;
   }
+  
+  Serial.println("--- Lectura completada ---\n");
 }
 
 // ========== PÁGINA WEB PRINCIPAL ==========
@@ -77,6 +119,9 @@ void handleRoot() {
     ".metric-label { font-size: 14px; opacity: 0.9; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 1px; }"
     ".metric-value { font-size: 48px; font-weight: bold; font-family: 'Courier New', monospace; }"
     ".metric-unit { font-size: 18px; opacity: 0.9; margin-left: 8px; }"
+    ".debug-box { background: #f5f5f5; border-left: 4px solid #ff9800; padding: 15px; margin-bottom: 20px; border-radius: 5px; font-family: monospace; font-size: 12px; }"
+    ".debug-label { font-weight: bold; color: #333; }"
+    ".debug-value { color: #666; }"
     ".info-box { background: #f5f5f5; border-left: 4px solid #667eea; padding: 15px; margin-bottom: 20px; border-radius: 5px; }"
     ".info-box-title { font-weight: bold; color: #333; margin-bottom: 5px; }"
     ".info-box-content { color: #666; font-size: 14px; line-height: 1.6; }"
@@ -111,6 +156,12 @@ void handleRoot() {
     "</div>"
     "</div>"
     "</div>"
+    "<div class=\"debug-box\">"
+    "<div class=\"debug-label\">DEBUG - Valor ADC crudo:</div>"
+    "<div class=\"debug-value\" id=\"adcValue\">0</div>"
+    "<div class=\"debug-label\" style=\"margin-top: 10px;\">Estado del LED:</div>"
+    "<div class=\"debug-value\" id=\"ledStatus\">Verificando...</div>"
+    "</div>"
     "<div id=\"qualityStatus\" class=\"info-box\">"
     "<div class=\"info-box-title\">"
     "<span class=\"status-indicator status-good\" id=\"statusIndicator\"></span>"
@@ -132,6 +183,8 @@ void handleRoot() {
     ".then(data => {"
     "document.getElementById('dustValue').textContent = data.dust.toFixed(2);"
     "document.getElementById('voltageValue').textContent = data.voltage.toFixed(2);"
+    "document.getElementById('adcValue').textContent = data.rawADC;"
+    "document.getElementById('ledStatus').textContent = data.ledStatus;"
     "const now = new Date();"
     "document.getElementById('lastUpdate').textContent = 'Última actualización: ' + now.toLocaleTimeString('es-ES');"
     "updateQualityStatus(data.dust);"
@@ -186,9 +239,13 @@ void handleRoot() {
 void handleSensorAPI() {
   readDustSensor();
   
+  String ledStatus = (digitalRead(LED_PIN) == HIGH) ? "ENCENDIDO" : "APAGADO";
+  
   String json = "{";
   json += "\"dust\":" + String(dustDensity, 2) + ",";
   json += "\"voltage\":" + String(voltage, 2) + ",";
+  json += "\"rawADC\":" + String(rawADC) + ",";
+  json += "\"ledStatus\":\"" + ledStatus + "\",";
   json += "\"timestamp\":" + String(millis());
   json += "}";
   
@@ -244,19 +301,42 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
   
+  Serial.println("\n\n========== CONFIGURANDO PINES ==========");
+  
   // Configurar pines
   pinMode(DUST_SENSOR_PIN, INPUT);
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LOW);
   
+  Serial.print("GPIO ");
+  Serial.print(DUST_SENSOR_PIN);
+  Serial.println(" configurado como INPUT");
+  Serial.print("GPIO ");
+  Serial.print(LED_PIN);
+  Serial.println(" configurado como OUTPUT");
+  
   // Configurar resolución del ADC
   analogReadResolution(12); // 12 bits = 0-4095
+  Serial.println("ADC configurado a 12 bits (0-4095)");
   
-  Serial.println("Pines configurados correctamente");
-  Serial.print("  - Sensor de polvo: GPIO ");
-  Serial.println(DUST_SENSOR_PIN);
-  Serial.print("  - LED: GPIO ");
-  Serial.println(LED_PIN);
+  // Test inicial del LED
+  Serial.println("\nTest del LED:");
+  digitalWrite(LED_PIN, HIGH);
+  Serial.println("LED ENCENDIDO");
+  delay(500);
+  digitalWrite(LED_PIN, LOW);
+  Serial.println("LED APAGADO");
+  
+  // Test inicial de lectura ADC
+  Serial.println("\nTest de lectura ADC:");
+  for (int i = 0; i < 5; i++) {
+    int valor = analogRead(DUST_SENSOR_PIN);
+    Serial.print("Lectura ");
+    Serial.print(i + 1);
+    Serial.print(": ");
+    Serial.println(valor);
+    delay(100);
+  }
   
   // Conectar a WiFi
   setupWiFi();
@@ -271,6 +351,20 @@ void setup() {
 void loop() {
   // Manejar solicitudes del cliente
   server.handleClient();
+  
+  // Debug periódico
+  if (millis() - lastDebugTime >= DEBUG_INTERVAL) {
+    Serial.println("\n=== DEBUG PERIODICO ===");
+    int testADC = analogRead(DUST_SENSOR_PIN);
+    float testVoltage = (testADC / (float)ADC_MAX) * VOLTAGE_REF;
+    Serial.print("Valor ADC crudo: ");
+    Serial.println(testADC);
+    Serial.print("Voltaje: ");
+    Serial.print(testVoltage);
+    Serial.println(" V");
+    Serial.println("===================\n");
+    lastDebugTime = millis();
+  }
   
   // Mostrar IP periódicamente
   if (millis() - lastDisplayTime >= DISPLAY_INTERVAL) {
